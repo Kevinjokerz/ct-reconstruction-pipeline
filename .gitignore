@@ -13,6 +13,11 @@
 !src/
 !scripts/
 !data/
+!data/prepared/
+!data/prepared/lodopab/
+!data/prepared/lodopab/train/
+!data/prepared/lodopab/test/
+!data/prepared/lodopab/val/
 !results/
 
 # --- Keep code + notebookes ---
