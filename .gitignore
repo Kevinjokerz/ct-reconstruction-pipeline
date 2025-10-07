@@ -1,0 +1,27 @@
+# Ignore EVERYTHING by default
+*
+
+# --- Keep core repoducibility files ---
+!.gitignore
+!README.md
+!README*.md
+!LICENSE*
+!environment.yml
+
+# --- Allow directory structure ---
+!notebooks/
+!src/
+!scripts/
+!data/
+!results/
+
+# --- Keep code + notebookes ---
+!**/*.py
+!**/*.ipynb
+
+
+# --- Keep patch metadata (but not heavy patch files) ---
+!**/patch_manifest.csv
+!**/patch_meta.json
+!data/prepared/**/*.csv
+!data/prepared/**/meta.json
