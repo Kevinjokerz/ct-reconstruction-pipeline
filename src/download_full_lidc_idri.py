@@ -1,24 +1,35 @@
-#!/usr/bin/env python3
 from tcia_utils import nbia
 import os
 import logging
 from datetime import datetime
 import time
+from pathlib import Path
 
-# Set up logging
+# Get project root (parent of src directory)
+script_dir = Path(__file__).parent  # src/
+project_root = script_dir.parent    # project root
+
+# Create necessary directories at project root
+log_dir = project_root / "log"
+data_dir = project_root / "data"
+log_dir.mkdir(exist_ok=True)
+data_dir.mkdir(exist_ok=True)
+
+# Configuration
+download_dir = data_dir / "lidc-idri-data"
+download_dir.mkdir(exist_ok=True)
+
+# Set up logging with timestamp in filename
+log_filename = log_dir / f"download_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('download.log'),
+        logging.FileHandler(log_filename),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
-
-# Configuration
-download_dir = "lidc-idri-data"
-os.makedirs(download_dir, exist_ok=True)
 
 
 def download_with_retry(series_data, max_retries=3):
@@ -30,7 +41,7 @@ def download_with_retry(series_data, max_retries=3):
             nbia.downloadSeries(
                 series_data=series_data,
                 input_type="df",
-                path=download_dir,
+                path=str(download_dir),
                 number=10  # Download 10 series at a time
             )
             logger.info("Batch completed successfully")
@@ -50,7 +61,8 @@ def download_with_retry(series_data, max_retries=3):
 
 logger.info("=" * 60)
 logger.info("Starting FULL LIDC-IDRI Collection Download (Robust Version)")
-logger.info(f"Download directory: {os.path.abspath(download_dir)}")
+logger.info(f"Download directory: {download_dir.absolute()}")
+logger.info(f"Log file: {log_filename.absolute()}")
 logger.info(f"Start time: {datetime.now()}")
 logger.info("=" * 60)
 
@@ -102,4 +114,3 @@ except Exception as e:
     logger.error(f"Fatal error during download: {str(e)}")
     logger.exception("Full traceback:")
     raise
-

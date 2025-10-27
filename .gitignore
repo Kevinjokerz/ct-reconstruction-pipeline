@@ -30,3 +30,14 @@
 !**/patch_meta.json
 !data/prepared/**/*.csv
 !data/prepared/**/meta.json
+
+# Log files
+log/
+*.log
+
+# Log files
+log/
+*.log
+
+# Prepared LIDC data (processed files)
+data/prepared/lidc/
