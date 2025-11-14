@@ -1,3 +1,18 @@
+"""
+prepare_data.py — CT data preparation (LoDoPaB + DICOM/LIDC)
+
+Pipeline
+--------
+- LoDoPaB: ground truth images -> clip -> normalize -> .npy per slice + manifest + meta
+- DICOM  : 3D HU volume -> clip -> normalize -> .npy per slice + manifest + meta
+
+Notes
+-----
+- All saved paths must be project-root-relative (no absolute leakage).
+- Config comes from CLI + .env via PrepConfig (see utils.config).
+- Intended entrypoint: `python -m src.prepare_data ...`
+"""
+
 from __future__ import annotations
 import os
 import csv
@@ -6,6 +21,17 @@ import json
 import argparse
 from typing import Iterator, Tuple, Optional, List
 from pathlib import Path
+import logging
+
+from src.utils import (
+    PrepConfig,
+    load_config,
+    set_seed,
+    setup_logger,
+    get_project_root,
+    to_relpath,
+    ensure_parent_dir
+)
 
 import numpy as np
 
@@ -17,21 +43,10 @@ def _norm_rel(p: Path, root: Path) -> str:
     """
     Return POSIX-style relative path to root (portable for CSV/JSON)
     """
-    try:
-        rel = p.relative_to(root)
-    except ValueError:
-        rel = Path(os.path.relpath(p, root))
-    s = rel.as_posix()
-    assert not (":" in s or s.startswith("/")), f"Absolute leaked: {s}"
-    return s
-
-def _ensure_out_dir(path: str) -> None:
-    """Create output dir and test write permission (minimal)."""
-    os.makedirs(path, exist_ok=True)
-    test_fp = os.path.join(path, ".write_test")
-    with open(test_fp, 'w') as f:
-        f.write("ok")
-    os.remove(test_fp)
+    project_root = get_project_root()
+    rel = to_relpath(p, root=project_root)
+    assert ":" not in rel and not rel.startswith("/"), f"Absolute leaked: {rel}"
+    return rel
 
 
 def _validate_clip_bounds(bounds: Tuple[float, float]) -> Tuple[float, float]:
@@ -143,7 +158,8 @@ def prepare_lodopab(
         return
 
     out_dir = os.path.join(out_dir, split)
-    _ensure_out_dir(out_dir)
+    out_dir_p = Path(out_dir).resolve()
+    ensure_parent_dir(out_dir_p / "dummy.txt")
     lo, hi = _validate_clip_bounds(clip_bounds)
 
     out_dir_p = Path(out_dir).resolve()
@@ -198,7 +214,7 @@ def prepare_lodopab(
             w.writerow(row)
             n_saved += 1
             if(i + 1) % 500 == 0:
-                print(f"[LoDoPaB] processed {i + 1} slices...")
+                logging.getLogger(__name__).info(f"[LoDoPaB] processed {i + 1} slices...")
 
     norm_meta = {"kind": norm}
     if norm == "minmax":
@@ -412,12 +428,11 @@ def prepare_dicom(
     Pipeline:
         load_dicom_stack(HU) -> clip -> normalize -> save_per_slice .npy + manifest.csv
     """
-
-    _ensure_out_dir(out_dir)
     lo, hi = _validate_clip_bounds(clip_bounds)
 
     #Resolve paths and infer data_root (.../data) with safe fallback
     out_dir_p = Path(out_dir).resolve()
+    ensure_parent_dir(out_dir_p / "dummy.txt")
     try:
         data_root = out_dir_p.parents[2]        # .../data
     except IndexError:
@@ -440,7 +455,7 @@ def prepare_dicom(
     else:
         raise ValueError(f"Unknown norm: {norm}")
     
-    assert np.isfinite(vol).all, "Non-finite after normalization"
+    assert np.isfinite(vol).all(), "Non-finite after normalization"
     if norm == "minmax":
         assert vol.min() >= -1e-6 and vol.max() <= 1 + 1e-6, "MinMax out of [0, 1]"
     
@@ -459,7 +474,7 @@ def prepare_dicom(
             w.writerow([i, rel_path, float(sl.min()), float(sl.max())])
         
         if (i + 1) % 200 == 0:
-            print(f"[DICOM] saved {i + 1}/{vol.shape[0]} slices...")
+            logging.getLogger(__name__).info(f"[DICOM] saved {i + 1}/{vol.shape[0]} slices...")
     
     meta = {
         "source": "DICOM",
@@ -506,31 +521,42 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--clip", nargs=2, type=float, default=None,
                     help="clip low high. LoDoPaB default=(0,1).DICOM default(-1000,1000).")
     ap.add_argument("--norm", choices=["minmax", "zscore"], default="minmax")
-    ap.add_argument("--out", type=str, required=True)
+    ap.add_argument("--out_root", type=str, required=True)
     ap.add_argument("--max_items", type=int, default=None, help="limit items (debug)")
     return ap.parse_args()
 
 def main() -> None:
     args = _parse_args()
+    cfg = load_config(args)
 
-    if args.source == "lodopab":
+    logger = setup_logger(name="prep_ct", log_dir=cfg.log_dir)
+    set_seed(cfg.seed)
+    logger.info(f"[CFG] {cfg}")
+
+    if cfg.source == "lodopab":
         clip_bounds = tuple(args.clip) if args.clip else (0.0, 1.0)
+
+        out_dir = os.path.join(cfg.out_root, "lodopab")
+
         prepare_lodopab(
             split=args.split,
             clip_bounds=clip_bounds,
-            norm=args.norm,
-            out_dir=args.out,
-            max_items=args.max_items,
+            norm=cfg.norm,
+            out_dir=cfg.out_root,
+            max_items=cfg.max_items if cfg.max_items > 0 else None,
         )
     else:
         if not args.dicom_dir:
             raise AssertionError("--dicom_dir is required for source=dicom")
+        
         clip_bounds = tuple(args.clip) if args.clip else (-1000.0, 1000.0)
+        out_dir = os.path.join(cfg.out_root, "ct")
+
         prepare_dicom(
             dicom_dir=args.dicom_dir,
             clip_bounds=clip_bounds,
-            norm=args.norm,
-            out_dir=args.out,
+            norm=cfg.norm,
+            out_dir=cfg.out_root,
         )
 
 if __name__ == "__main__":

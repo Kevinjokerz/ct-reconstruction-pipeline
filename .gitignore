@@ -11,7 +11,9 @@
 # --- Allow directory structure ---
 !notebooks/
 !src/
+!src/**
 !scripts/
+!scripts/**
 !data/
 !data/prepared/
 !data/prepared/lodopab/
@@ -21,8 +23,8 @@
 !results/
 
 # --- Keep code + notebookes ---
-!**/*.py
-!**/*.ipynb
+!*.py
+!*.ipynb
 
 
 # --- Keep patch metadata (but not heavy patch files) ---
@@ -30,3 +32,11 @@
 !**/patch_meta.json
 !data/prepared/**/*.csv
 !data/prepared/**/meta.json
+
+# --- Re-ignore Python caches & compiled files ---
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+
+# Jupyter checkpoints
+**/.ipynb_checkpoints/
