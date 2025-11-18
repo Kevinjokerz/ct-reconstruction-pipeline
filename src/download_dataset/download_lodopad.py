@@ -2,7 +2,7 @@ import os
 from dival import get_standard_dataset
 
 # Configuration - edit these values directly
-PROJECT_DATA_DIR = os.path.abspath("data")  # Where to store the dataset
+PROJECT_DATA_DIR = os.path.abspath("../data/prepared/lodopab")  # Where to store the dataset
 DATASET_NAME = 'lodopab'
 IMPL = 'skimage'
 

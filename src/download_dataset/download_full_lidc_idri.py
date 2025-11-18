@@ -10,22 +10,18 @@ script_dir = Path(__file__).parent  # src/
 project_root = script_dir.parent    # project root
 
 # Create necessary directories at project root
-log_dir = project_root / "log"
 data_dir = project_root / "data"
-log_dir.mkdir(exist_ok=True)
 data_dir.mkdir(exist_ok=True)
 
 # Configuration
 download_dir = data_dir / "lidc-idri-data"
 download_dir.mkdir(exist_ok=True)
 
-# Set up logging with timestamp in filename
-log_filename = log_dir / f"download_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+# Set up logging (console only, no file)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(log_filename),
         logging.StreamHandler()
     ]
 )
@@ -62,7 +58,6 @@ def download_with_retry(series_data, max_retries=3):
 logger.info("=" * 60)
 logger.info("Starting FULL LIDC-IDRI Collection Download (Robust Version)")
 logger.info(f"Download directory: {download_dir.absolute()}")
-logger.info(f"Log file: {log_filename.absolute()}")
 logger.info(f"Start time: {datetime.now()}")
 logger.info("=" * 60)
 
