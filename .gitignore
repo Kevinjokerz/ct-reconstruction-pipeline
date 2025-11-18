@@ -18,6 +18,7 @@
 !scripts/**
 !notebooks/
 !notebooks/**
+!src/data/results/**
 
 
 # --- Keep code + notebookes ---
@@ -55,5 +56,6 @@ log/
 log/
 *.log
 
-# Prepared LIDC data (processed files)
-data/prepared/lidc/
+# Discard dataset files
+src/data/lidc-idri-data/*
+src/data/prepared/*
