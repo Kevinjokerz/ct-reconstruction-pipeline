@@ -7,22 +7,22 @@
 !README*.md
 !LICENSE*
 !environment.yml
+!requirements.txt
+!pyproject.toml
+!.pre-commit-config.yaml
 
 # --- Allow directory structure ---
-!notebooks/
 !src/
+!src/**
 !scripts/
-!data/
-!data/prepared/
-!data/prepared/lodopab/
-!data/prepared/lodopab/train/
-!data/prepared/lodopab/test/
-!data/prepared/lodopab/val/
-!results/
+!scripts/**
+!notebooks/
+!notebooks/**
+
 
 # --- Keep code + notebookes ---
-!**/*.py
-!**/*.ipynb
+!*.py
+!*.ipynb
 
 
 # --- Keep patch metadata (but not heavy patch files) ---
@@ -30,3 +30,19 @@
 !**/patch_meta.json
 !data/prepared/**/*.csv
 !data/prepared/**/meta.json
+
+# --- Re-ignore Python caches & compiled files ---
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+
+# Jupyter checkpoints
+**/.ipynb_checkpoints/
+
+# ---------- IDE / OS junk ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

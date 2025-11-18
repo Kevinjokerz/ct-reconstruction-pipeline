@@ -1,3 +1,18 @@
+"""
+prepare_data.py — CT data preparation (LoDoPaB + DICOM/LIDC)
+
+Pipeline
+--------
+- LoDoPaB: ground truth images -> clip -> normalize -> .npy per slice + manifest + meta
+- DICOM  : 3D HU volume -> clip -> normalize -> .npy per slice + manifest + meta
+
+Notes
+-----
+- All saved paths must be project-root-relative (no absolute leakage).
+- Config comes from CLI + .env via PrepConfig (see utils.config).
+- Intended entrypoint: `python -m src.prepare_data ...`
+"""
+
 from __future__ import annotations
 import os
 import csv
@@ -6,32 +21,65 @@ import json
 import argparse
 from typing import Iterator, Tuple, Optional, List
 from pathlib import Path
+import logging
+from dataclasses import dataclass
+
+from src.utils import (
+    PrepConfig,
+    load_config,
+    set_seed,
+    setup_logger,
+    get_project_root,
+    to_relpath,
+    ensure_parent_dir
+)
 
 import numpy as np
+import pandas as pd
 
 # =========================
 # Utility: I/O + validation
 # =========================
 
+def _normalize_file_location(raw_location: str) -> str:
+    """
+    Normalize TCIA ``File Location`` strings into POSIX-style relative paths.
+
+    Parameters
+    ----------
+    raw_location :
+        Raw value from the TCIA LIDC-IDRI ``File Location`` column.
+        Typical pattern: ``".\\\\LIDC-IDRI\\\\LIDC-IDRI-0001\\\\01-01-2000-NA-..."``.
+
+    Returns
+    -------
+    str
+        Normalized path using ``/`` as separator and without a leading dot,
+        e.g. ``"LIDC-IDRI/LIDC-IDRI-0001/01-01-2000-NA-..."``.
+
+    Notes
+    -----
+    The returned path is **relative** to the LIDC raw root directory
+    (see ``--raw_root`` in the CLI).
+    """
+    raw = str(raw_location).strip()
+    cleaned = raw.lstrip(".\\/")
+    cleaned = cleaned.replace("\\", "/")
+
+    assert "\\" not in cleaned, (
+        f"[FILE LOCATION:norm] Backslash still present: {cleaned!r}"
+    )
+
+    return cleaned
+
 def _norm_rel(p: Path, root: Path) -> str:
     """
     Return POSIX-style relative path to root (portable for CSV/JSON)
     """
-    try:
-        rel = p.relative_to(root)
-    except ValueError:
-        rel = Path(os.path.relpath(p, root))
-    s = rel.as_posix()
-    assert not (":" in s or s.startswith("/")), f"Absolute leaked: {s}"
-    return s
-
-def _ensure_out_dir(path: str) -> None:
-    """Create output dir and test write permission (minimal)."""
-    os.makedirs(path, exist_ok=True)
-    test_fp = os.path.join(path, ".write_test")
-    with open(test_fp, 'w') as f:
-        f.write("ok")
-    os.remove(test_fp)
+    project_root = get_project_root()
+    rel = to_relpath(p, root=project_root)
+    assert ":" not in rel and not rel.startswith("/"), f"Absolute leaked: {rel}"
+    return rel
 
 
 def _validate_clip_bounds(bounds: Tuple[float, float]) -> Tuple[float, float]:
@@ -143,7 +191,8 @@ def prepare_lodopab(
         return
 
     out_dir = os.path.join(out_dir, split)
-    _ensure_out_dir(out_dir)
+    out_dir_p = Path(out_dir).resolve()
+    ensure_parent_dir(out_dir_p / "dummy.txt")
     lo, hi = _validate_clip_bounds(clip_bounds)
 
     out_dir_p = Path(out_dir).resolve()
@@ -198,7 +247,7 @@ def prepare_lodopab(
             w.writerow(row)
             n_saved += 1
             if(i + 1) % 500 == 0:
-                print(f"[LoDoPaB] processed {i + 1} slices...")
+                logging.getLogger(__name__).info(f"[LoDoPaB] processed {i + 1} slices...")
 
     norm_meta = {"kind": norm}
     if norm == "minmax":
@@ -234,6 +283,108 @@ def prepare_lodopab(
 # =========================
 # Clinical DICOM branch (HU)
 # =========================
+
+@dataclass
+class LIDCMetaConfig:
+    """
+    Configuration for bulk preprocessing of LIDC-IDRI via TCIA metadata.
+
+    All paths are interpreted **relative** to the project root.
+    """
+    metadata_rel: str = "data/raw/lidc-idri/manifest-1600709154662/metadata.csv"
+    raw_root_rel: str = "data/raw/lidc-idri/manifest-1600709154662/"
+    out_root_rel: str = "data/prepared/lidc"
+    collection: str = "LIDC-IDRI"
+    modality: str = "CT"
+
+    clip_bounds: Tuple[float, float] = (-1000.0, 1000.0)
+    norm: str = "minmax"
+
+    # Limit on number of series for debugging
+    max_series: Optional[int] = None
+
+def prepare_lidc_from_metadata(config: LIDCMetaConfig, logger: logging.Logger) -> None:
+    """
+    Run bulk slice-level preprocessing for the LIDC-IDRI dataset.
+
+    This function reads a TCIA-style ``metadata.csv`` file and, for each
+    matching CT series, calls :func:`prepare_dicom` to:
+
+    - convert DICOM to HU,
+    - apply clipping and normalization,
+    - save each axial slice as ``.npy``,
+    - write a per-series ``manifest.csv`` and ``meta.json``.
+
+    Parameters
+    ----------
+    config :
+        LIDC-IDRI bulk preprocessing configuration.
+
+    Notes
+    -----
+    - All paths inside ``metadata.csv`` *must* remain dataset-relative
+      (no absolute drive letters).
+    - The function is idempotent: if a target output directory already
+      contains a ``manifest.csv``, that series is skipped.
+    """
+    root = get_project_root()
+
+    metadata_path = root / config.metadata_rel
+    raw_root = (root / config.raw_root_rel).resolve()
+    out_root = (root / config.out_root_rel).resolve()
+
+    # 1) Load metadata CSV
+    df = pd.read_csv(metadata_path)
+    logger.info("[LIDC] metadata columns: %s", df.columns.tolist())
+
+    # 2) Filter by collection and modality if those columns exist.
+    if "Collection" in df.columns and config.collection is not None:
+        df = df[df["Collection"] == config.collection]
+    if "Modality" in df.columns and config.modality is not None:
+        df = df[df["Modality"] == config.modality]
+    
+    logger.info(f"[LIDC] {len(df)} CT series after filtering.")
+
+    processed = 0
+
+    for _, row in df.iterrows():
+        subject_id = str(row["Subject ID"])
+        series_uid = str(row["Series UID"])
+        raw_loc = str(row["File Location"])
+
+        rel_series_posix = _normalize_file_location(raw_loc)
+        series_dir = raw_root / rel_series_posix
+
+        if not series_dir.is_dir():
+            logger.warning(f"[LIDC] Missing series dir: {series_dir}")
+            continue
+
+        out_dir = out_root / subject_id / series_uid
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        manifest_path = out_dir / "manifest.csv"
+        if manifest_path.exists():
+            logger.warning(f"[LIDC] skip existing series {subject_id} | {series_uid}")
+            continue
+
+        logger.info(f"[LIDC] prepare series {subject_id} | {series_uid}")
+        
+        lo, hi = _validate_clip_bounds(config.clip_bounds)
+        prepare_dicom(
+            dicom_dir=str(series_dir),
+            clip_bounds=(lo, hi),
+            norm=config.norm,
+            out_dir=str(out_dir)
+        )
+        
+        processed += 1
+        if config.max_series is not None and processed >= config.max_series:
+            logger.info(f"[LIDC] reached max_series={config.max_series}, stopping.")
+            break
+
+    logger.info(f"[LIDC] done. processed {processed} CT series.")
+
+
 
 def _slice_sort_key(ds) -> Tuple[float, int]:
     """
@@ -303,15 +454,24 @@ def load_dicom_stack(dicom_dir: str) -> np.ndarray:
     - Does NOT invert MONOCHROME1 (since this is display-related, not quantiative)
     """
     import pydicom
+
+    logger = logging.getLogger(__name__)
     paths = _sorted_dicom_paths(dicom_dir)
     if not paths:
         raise FileNotFoundError(f"No .dcm files found in {dicom_dir}")
     
     slices_hu = []
+    slopes, intercepts = set(), set()
+    rwvm_flags = []
 
     for p in paths:
         ds = pydicom.dcmread(p)
         arr = ds.pixel_array.astype(np.float32, copy=False)
+
+        slopes.add(float(getattr(ds, "RescaleSlope", 1.0)))
+        intercepts.add(float(getattr(ds, "RescaleIntercept", 0.0)))
+        rwvm = getattr(ds, "RealWorldValueMappingSequence", None)
+        rwvm_flags.append(bool(rwvm and len(rwvm) > 0))
 
         #Do NOT invert MONOCHROME1 for quantitative CT
         #PhotometricInterpretation is only a display convention, not a quantitative mapping
@@ -320,11 +480,19 @@ def load_dicom_stack(dicom_dir: str) -> np.ndarray:
     
     vol = np.stack(slices_hu, axis=0).astype(np.float32, copy=False)
     assert np.isfinite(vol).all(), "Non-finite HU detected"
-    assert vol.min() > -4000 and vol.max() < 10000, "HU range suspicious"
 
-    z, h, w = vol.shape
-    vmin, vmedian, vmax = float(vol.min()), float(np.median(vol)), float(vol.max())
-    print(f"[DICOM] vol shape = {vol.shape} HU[min, median, max]={vmin:.1f},{vmedian:.1f},{vmax:.1f}")
+    vmin, vmed, vmax = float(vol.min()), float(np.median(vol)), float(vol.max())
+    if vmin <= -4000 or vmax >= 10000:
+        logger.warning(
+            f"[DICOM] HU range suspicious in {dicom_dir} -> "
+            f"min={vmin:.1f}, med={vmed:.1f}, max={vmax:.1f}"
+        )
+
+        q_lo, q_hi = np.percentile(vol, [0.5, 99.5])
+        vol = np.clip(vol, q_lo, q_hi, out=vol)
+
+    vmin2, vmed2, vmax2 = float(vol.min()), float(np.median(vol)), float(vol.max())
+    logger.info(f"[DICOM] vol shape = {vol.shape} HU[min, median, max]={vmin2:.1f},{vmed2:.1f},{vmax2:.1f}")
 
     return vol
 
@@ -412,12 +580,11 @@ def prepare_dicom(
     Pipeline:
         load_dicom_stack(HU) -> clip -> normalize -> save_per_slice .npy + manifest.csv
     """
-
-    _ensure_out_dir(out_dir)
     lo, hi = _validate_clip_bounds(clip_bounds)
 
     #Resolve paths and infer data_root (.../data) with safe fallback
     out_dir_p = Path(out_dir).resolve()
+    ensure_parent_dir(out_dir_p / "dummy.txt")
     try:
         data_root = out_dir_p.parents[2]        # .../data
     except IndexError:
@@ -440,7 +607,7 @@ def prepare_dicom(
     else:
         raise ValueError(f"Unknown norm: {norm}")
     
-    assert np.isfinite(vol).all, "Non-finite after normalization"
+    assert np.isfinite(vol).all(), "Non-finite after normalization"
     if norm == "minmax":
         assert vol.min() >= -1e-6 and vol.max() <= 1 + 1e-6, "MinMax out of [0, 1]"
     
@@ -458,8 +625,8 @@ def prepare_dicom(
             rel_path = _norm_rel(sl_path_abs, data_root)
             w.writerow([i, rel_path, float(sl.min()), float(sl.max())])
         
-        if (i + 1) % 200 == 0:
-            print(f"[DICOM] saved {i + 1}/{vol.shape[0]} slices...")
+            if (i + 1) % 200 == 0:
+                logging.getLogger(__name__).info(f"[DICOM] saved {i + 1}/{vol.shape[0]} slices...")
     
     meta = {
         "source": "DICOM",
@@ -498,40 +665,86 @@ def prepare_dicom(
 # =========================
 
 def _parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for CT preprocessing."""
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--source", choices=["lodopab", "dicom"], required=True)
+    ap.add_argument("--source", choices=["lodopab", "dicom", "lidc_meta"], required=True, help=(
+        "Type of data to prepare: "
+        "'lodopab' (LoDoPaB ground-truth slices), "
+        "'dicom' (single CT series), or "
+        "'lidc_meta' (bulk LIDC-IDRI using TCIA metadata.csv)."
+    ))
+
     ap.add_argument("--split", choices=["train", "val", "test"], default="train")
-    ap.add_argument("--dicom_dir", type=str, default=None)
+    ap.add_argument("--dicom_dir", type=str, default=None, help="Directory containing a single CT series (source=dicom).")
+    ap.add_argument("--metadata", type=str, default=None, help=(
+        "Relative path (from PROJECT_ROOT) to TCIA metadata.csv "
+        "for LIDC-IDRI (required for source=lidc_meta)."
+    ))
+    ap.add_argument("--raw_root", type=str, default="data/raw/lidc-idri/manifest-1600709154662", help=(
+        "Root directory that contains the 'LIDC-IDRI/' folder "
+        "downloaded from TCIA (source=lidc_meta)."
+    ))
     ap.add_argument("--clip", nargs=2, type=float, default=None,
                     help="clip low high. LoDoPaB default=(0,1).DICOM default(-1000,1000).")
     ap.add_argument("--norm", choices=["minmax", "zscore"], default="minmax")
-    ap.add_argument("--out", type=str, required=True)
+    ap.add_argument("--out_root", type=str, required=True)
     ap.add_argument("--max_items", type=int, default=None, help="limit items (debug)")
     return ap.parse_args()
 
 def main() -> None:
+    """Entry point for the CT preprocessing CLI."""
     args = _parse_args()
+    cfg = load_config(args)
 
-    if args.source == "lodopab":
+    logger = setup_logger(name="prep_ct", log_dir=cfg.log_dir)
+    set_seed(cfg.seed)
+    logger.info(f"[CFG] {cfg}")
+
+    if cfg.source == "lodopab":
         clip_bounds = tuple(args.clip) if args.clip else (0.0, 1.0)
+
+        max_items = cfg.max_items if (cfg.max_items is not None and cfg.max_items > 0) else None
+
         prepare_lodopab(
             split=args.split,
             clip_bounds=clip_bounds,
-            norm=args.norm,
-            out_dir=args.out,
-            max_items=args.max_items,
+            norm=cfg.norm,
+            out_dir=cfg.out_root,
+            max_items=max_items,
         )
-    else:
-        if not args.dicom_dir:
-            raise AssertionError("--dicom_dir is required for source=dicom")
-        clip_bounds = tuple(args.clip) if args.clip else (-1000.0, 1000.0)
+        return
+    
+    if args.source == "dicom":
+        if args.dicom_dir is None:
+            raise ValueError(f"--dicom_dir is required for source='dicom'.")
+        
+        clip_bounds = tuple(args.clip) if args.clip is not None else (-1000, 1000)
         prepare_dicom(
             dicom_dir=args.dicom_dir,
             clip_bounds=clip_bounds,
-            norm=args.norm,
-            out_dir=args.out,
+            norm=cfg.norm,
+            out_dir=cfg.out_root
         )
 
+        return
+
+    if args.source == "lidc_meta":
+        if args.metadata is None:
+            raise ValueError(f"--metadata is required for source='lidc_meta'.")
+        
+        clip_bounds = tuple(args.clip) if args.clip is not None else (-1000, 1000)
+        max_series = cfg.max_items if (cfg.max_items is not None and cfg.max_items > 0) else None
+        lidc_cfg = LIDCMetaConfig(
+            metadata_rel=args.metadata,
+            raw_root_rel=args.raw_root,
+            out_root_rel=cfg.out_root,
+            clip_bounds=clip_bounds,
+            norm=cfg.norm,
+            max_series=max_series,
+        )
+        prepare_lidc_from_metadata(lidc_cfg, logger)
+        return
+    
 if __name__ == "__main__":
     main()
