@@ -7,20 +7,18 @@
 !README*.md
 !LICENSE*
 !environment.yml
+!requirements.txt
+!pyproject.toml
+!.pre-commit-config.yaml
 
 # --- Allow directory structure ---
-!notebooks/
 !src/
 !src/**
 !scripts/
 !scripts/**
-!data/
-!data/prepared/
-!data/prepared/lodopab/
-!data/prepared/lodopab/train/
-!data/prepared/lodopab/test/
-!data/prepared/lodopab/val/
-!results/
+!notebooks/
+!notebooks/**
+
 
 # --- Keep code + notebookes ---
 !*.py
@@ -40,3 +38,11 @@
 
 # Jupyter checkpoints
 **/.ipynb_checkpoints/
+
+# ---------- IDE / OS junk ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

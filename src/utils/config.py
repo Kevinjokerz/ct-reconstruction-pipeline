@@ -113,7 +113,7 @@ def load_config(cli_args: Any) -> PrepConfig:
     log_dir = env["LOG_DIR"]
     reports_dir = env["REPORTS_DIR"]
 
-    valid_sources = {"lodopab", "dicom"}
+    valid_sources = {"lodopab", "dicom", "lidc_meta"}
     if source not in valid_sources:
         raise ValueError(f"SOURCE must be one of {valid_sources}, got {source!r}")
     
