@@ -44,9 +44,6 @@ from .io import (
 # --- Logging -----------------------------------------------------------------
 from .logger import setup_logger
 
-# --- Config ------------------------------------------------------------------
-from .config import PrepConfig, load_config
-
 # --- Public API (explicit) ---------------------------------------------------
 __all__ = [
     # repro
@@ -73,8 +70,4 @@ __all__ = [
 
     # logger
     "setup_logger",
-
-    # config
-    "PrepConfig",
-    "load_config",
 ]

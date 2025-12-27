@@ -25,14 +25,14 @@ import logging
 from dataclasses import dataclass
 
 from src.utils import (
-    PrepConfig,
-    load_config,
     set_seed,
     setup_logger,
     get_project_root,
     to_relpath,
     ensure_parent_dir
 )
+
+from src.config.prep import load_config
 
 import numpy as np
 import pandas as pd
